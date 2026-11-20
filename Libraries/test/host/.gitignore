@@ -1,0 +1,16 @@
+vectors
+roundtrip
+regressions
+types
+harden
+copygrowth
+patterns
+dos
+fuzzbad
+sliptcp
+slipframes
+buffered
+*.dSYM/
+onecall
+mustfail.log
+.cxxflags

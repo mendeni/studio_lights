@@ -1,0 +1,436 @@
+
+#include "OSCData.h"
+
+#include <limits.h>	// LONG_MAX, to pick the OSC type code for long
+
+
+osctime_t zerotime = {0,0};
+//OSC 1.0's "immediately" timetag: the special value 1, not 0
+osctime_t immediatetime = {0,1};
+oscrgba_t zeroRgba = {0,0,0,0};
+oscmidi_t zeroMidi = {0,0,0,0,0};
+oscevent_t zeroEvent = OSC_NULL;
+
+/*=============================================================================
+	CONSTRUCTORS
+
+	overloaded methods for each of the types which will
+	set the type flag, the size (in bytes), and the data
+=============================================================================*/
+
+
+OSCData::OSCData(const char * s){
+	error = OSC_OK;
+	type = 's';
+	bytes = (strlen(s) + 1);
+	//own the data
+	char * mem = (char *) malloc(bytes);
+	if (mem == NULL){
+		error = ALLOCFAILED;
+		data.s = NULL;  //see ~OSCData()
+	} else {
+		strcpy(mem, s);
+		data.s = mem;
+	}
+}
+
+
+/*
+	Integer constructors.
+
+	One body per width, then one thin constructor per fundamental integer
+	type.  long is the only type whose width varies across the targets this
+	library builds for (4 bytes on AVR/ARM/Xtensa, 8 bytes on a 64-bit host
+	build of the tests), so it is the only one that needs a conditional -- and
+	the conditional selects a type code, not which overloads exist.  Testing
+	sizeof() at runtime instead would drag the 64-bit path into AVR builds.
+*/
+void OSCData::initInt32(int32_t v){
+	error = OSC_OK;
+	type = 'i';
+	bytes = 4;
+	data.i = v;
+}
+
+void OSCData::initInt64(int64_t v){
+	error = OSC_OK;
+	type = 'h';
+	bytes = 8;
+	data.l = v;
+}
+
+OSCData::OSCData(signed char v)   { initInt32((int32_t) v); }
+OSCData::OSCData(unsigned char v) { initInt32((int32_t)(uint32_t) v); }
+OSCData::OSCData(short v)         { initInt32((int32_t) v); }
+OSCData::OSCData(unsigned short v){ initInt32((int32_t)(uint32_t) v); }
+OSCData::OSCData(int v)           { initInt32((int32_t) v); }
+OSCData::OSCData(unsigned int v)  { initInt32((int32_t)(uint32_t) v); }
+
+#if LONG_MAX > 2147483647L
+OSCData::OSCData(long v)          { initInt64((int64_t) v); }
+OSCData::OSCData(unsigned long v) { initInt64((int64_t)(uint64_t) v); }
+#else
+OSCData::OSCData(long v)          { initInt32((int32_t) v); }
+OSCData::OSCData(unsigned long v) { initInt32((int32_t)(uint32_t) v); }
+#endif
+
+OSCData::OSCData(long long v)          { initInt64((int64_t) v); }
+OSCData::OSCData(unsigned long long v) { initInt64((int64_t)(uint64_t) v); }
+
+OSCData::OSCData(oscrgba_t rgba){
+	error = OSC_OK;
+	type = 'r';
+	bytes = 4;
+	data.rgba = rgba;
+}
+OSCData::OSCData(oscmidi_t midi){
+	error = OSC_OK;
+	type = 'm';
+	//4, not sizeof(oscmidi_t): `channel` is a convenience field that is folded
+	//into the status byte on the wire, so only four bytes are transmitted
+	bytes = 4;
+	data.midi = midi;
+}
+
+OSCData::OSCData(float f){
+	error = OSC_OK;
+	type = 'f';
+	bytes = 4;
+	data.f = f;
+}
+
+OSCData::OSCData(osctime_t t){
+	error = OSC_OK;
+	type = 't';
+	bytes = 8;
+	data.time = t;
+}
+OSCData::OSCData(oscevent_t event){
+	error = OSC_OK;
+	type = (event==OSC_IMPULSE)?'I':'N';
+	bytes = 0;
+}
+
+OSCData::OSCData(boolean b){
+	error = OSC_OK;
+	type = b?'T':'F';
+	bytes = 0;
+}
+
+OSCData::OSCData(double d){
+	error = OSC_OK;
+	bytes = sizeof(double);
+	//if it's not 8 bytes it's not a true double
+	if (bytes == 8){
+		type = 'd';
+		data.d = d;
+	} else {
+		type = 'f';
+		data.f = d;
+	}
+}
+
+OSCData::OSCData(uint8_t * b, int len){
+	error = OSC_OK;
+	type = 'b';
+	//Refuse a length no OSC blob can have. For -1..-3 this allocated len + 4
+	//bytes, wrote the 4-byte size into them and then copied a negative count;
+	//from -4 down it allocated nothing yet reported OSC_OK, so send() emitted
+	//a 'b' with no size, or crashed. Above INT_MAX - 4, len + 4 overflowed.
+	//A refused datum owns nothing, and add() and set() drop it.
+	if (len < 0 || len > INT_MAX - 4){
+		error = INVALID_OSC;
+		bytes = 0;
+		data.b = NULL;
+		return;
+	}
+	bytes = len + 4;
+	//add the size to the front of the blob
+	uint32_t len32 = (uint32_t) len;
+    //make sure the length is endian-safe
+    len32 = BigEndian(len32);
+	uint8_t * lenPtr = (uint8_t *) (& len32);
+	//own the data
+	if(bytes>0)
+    {
+
+        uint8_t * mem = (uint8_t * ) malloc(bytes);
+        if (mem == NULL){
+            error = ALLOCFAILED;
+            data.b = NULL;  //see ~OSCData()
+        } else {
+            //copy over the blob length
+            memcpy(mem, lenPtr, 4);
+            //copy over the blob data
+            memcpy(mem + 4, b, len);
+            data.b = mem;
+        }
+    }
+    else
+        data.b = 0;
+}
+
+OSCData::OSCData (OSCData * datum){
+	error = OSC_OK;
+	type = datum->type;
+	bytes = datum->bytes;
+	if ( (type == 'i') || (type == 'f') || (type == 'd') || (type == 't')
+        || (type == 'h') || (type == 'c') || (type == 'r') || (type == 'm') 
+        )
+    {
+		data = datum->data;
+	} else if ((type == 's') || (type == 'b')){
+		//allocate a new piece of memory
+        uint8_t * mem = (uint8_t * ) malloc(bytes);
+        if (mem == NULL){
+            error = ALLOCFAILED;
+            data.b = NULL;  //see ~OSCData()
+        } else {
+            //copy over the blob length
+            memcpy(mem, datum->data.b, bytes);
+            data.b = mem;
+        }
+	}
+}
+
+//DESTRUCTOR
+//Frees data.s or data.b whenever bytes > 0, and the constructors set bytes
+//before they malloc, so one whose malloc fails must store NULL there. They
+//used to leave it uninitialized. That was harmless while a failed datum was
+//only ever leaked, but set() deletes one, and free() got whatever the heap
+//block happened to hold.
+OSCData::~OSCData(){
+    //if there are no bytes, there is nothing to free
+    if (bytes>0){
+        //if the data is of type 's' or 'b', need to free that memory
+        if (type == 's'){
+            free(data.s);
+        }else if( type == 'b'){
+            free(data.b);
+        }
+    }
+}
+
+//sets just the type as a message placeholder
+//no data
+OSCData::OSCData(char t){
+	//The zero-byte types carry no payload, so decoding is complete the moment
+	//the type tag is read -- nothing later will arrive to clear an error on
+	//them.  'I' (impulse) and 'N' (null) were omitted here, which left every
+	//inbound message containing one permanently INVALID_OSC.  Because
+	//hasError() is message-wide, a single impulse or null argument discarded
+	//the whole message including its other, perfectly good arguments, even
+	//though this library emits 'I' and 'N' itself.
+	error = (t == 'T' || t == 'F' || t == 'I' || t == 'N') ? OSC_OK : INVALID_OSC;
+	type = t;
+    bytes = 0;
+}
+
+/*=============================================================================
+    GETTERS
+
+    perform a safety check to make sure the data type matches the request
+    otherwise returns NULL
+=============================================================================*/
+
+int64_t OSCData::getInt64(){
+    if (type == 'h'){
+        //data.l, not data.i: reading the 32-bit union member truncated the
+        //value and left the high word indeterminate
+        return data.l;
+    } else {
+    #ifndef ESPxx
+        return (int64_t)NULL;
+    #else
+        return -1;
+    #endif
+    }
+}
+int32_t OSCData::getInt(){
+    if (type == 'i'){
+        return data.i;
+    } else {
+    #ifndef ESPxx
+        return (int32_t)NULL;
+    #else
+        return -1;
+    #endif
+    }
+}
+osctime_t OSCData::getTime(){
+    if (type == 't'){
+        return data.time;
+    } else {
+
+        return zerotime;
+    }
+}
+float OSCData::getFloat(){
+    if (type == 'f'){
+        return data.f;
+    } else {
+    #ifndef ESPxx
+        return (float)NULL;
+    #else
+        return -1;
+    #endif
+    }
+}
+
+double OSCData::getDouble(){
+    if (type == 'd'){
+        return data.d;
+    } else {
+    #ifndef ESPxx
+        return (double)NULL;
+    #else
+        return -1;
+    #endif
+    }
+}
+bool OSCData::getBoolean(){
+    if (type == 'T'){
+        return true;
+    } else if (type=='F'){
+        return false;
+    }
+    else
+    #ifndef ESPxx
+        return NULL;
+    #else
+        return -1;
+    #endif
+}
+oscevent_t OSCData::getEvent() {
+	if (type == 'N'){
+		return OSC_NULL;
+	} else if (type=='I'){
+		return OSC_IMPULSE;
+	} else {
+	return zeroEvent;
+	}
+}
+oscrgba_t OSCData::getRgba() {
+	if (type == 'r'){
+		return data.rgba;
+	} else {
+	return zeroRgba;
+	}
+}
+oscmidi_t OSCData::getMidi() {
+	if (type == 'm'){
+		return data.midi;
+	} else {
+	return zeroMidi;
+	}
+}
+
+
+// no-safety-check straightforward way to fill the passed buffer
+// with the received string
+int OSCData::getString(char * strBuffer){
+    if (type == 's'){
+        strncpy(strBuffer, data.s, bytes);
+        return bytes;
+    } else {
+    #ifndef ESPxx
+        return (int)NULL;
+    #else
+        return -1;
+    #endif
+    }
+}
+
+// it's possible to pass strBuffer's size as argument (length)
+// in order to check that it won't be overflown
+int OSCData::getString(char * strBuffer, int length){
+    if (type == 's' && bytes <= length){
+        strncpy(strBuffer, data.s, bytes);
+        return bytes;
+    } else {
+    #ifndef ESPxx
+        return (int)NULL;
+    #else
+        return -1;
+    #endif
+    }
+}
+
+// Here we can get only a part of the string 
+int OSCData::getString(char * strBuffer, int length, int offset, int size)
+{
+	int maxLen = bytes - offset; 
+    if (type == 's' && maxLen >= 0 && size <= maxLen && size <= length){
+        strncpy(strBuffer, data.s + offset, size);
+        return size;
+    } else {
+    #ifndef ESPxx
+        return (int)NULL;
+    #else
+        return -1;
+    #endif
+    }
+}
+
+// no-safety-check straightforward way to fill the passed buffer
+// with the contents of the received blob
+int OSCData::getBlob(uint8_t * blobBuffer){
+    // read the blob length
+    int blobLength =  getBlobLength();
+
+    if (type == 'b'){
+        memcpy(blobBuffer, data.b + 4, blobLength);
+        return blobLength;
+    } else {
+    #ifndef ESPxx
+        return (int)NULL;
+    #else
+        return -1;
+    #endif
+    }
+}
+
+// it's possible to pass blobBuffer's size as argument (length)
+// in order to check that it won't be overflown
+int OSCData::getBlob(uint8_t * blobBuffer, int length){
+    //jump over the first 4 bytes which encode the length
+    int blobLength =  bytes-4;
+    if (type == 'b' && blobLength <= length){
+        memcpy(blobBuffer, data.b + 4, blobLength);
+        return blobLength;
+    } else {
+    #ifndef ESPxx
+        return (int)NULL;
+    #else
+        return -1;
+    #endif
+    }
+}
+
+// Here we can get only a part of the blob
+int OSCData::getBlob(uint8_t * blobBuffer, int length, int offset, int size){
+    //jump over the first 4 bytes which encode the length
+    int blobLength =  bytes-4-offset;
+    if (type == 'b' && blobLength >= 0 && size <= blobLength && size <= length){
+        memcpy(blobBuffer, data.b + 4 + offset, size);
+        return size;
+    } else {
+    #ifndef ESPxx
+        return (int)NULL;
+    #else
+        return -1;
+    #endif
+    }
+}
+
+const uint8_t* OSCData::getBlob() {
+    return type == 'b' ? data.b + 4 : NULL;
+}
+
+int OSCData::getBlobLength(){
+  if (type == 'b'){
+    //jump over the first 4 bytes which encode the length
+    return bytes-4;
+  }
+  return -1;
+}

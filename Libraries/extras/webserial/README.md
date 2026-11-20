@@ -1,0 +1,272 @@
+# Web Serial examples — generator
+
+Browser talks OSC to a board over USB, with no server, no npm install and no
+network. The page is plain HTML with an inline OSC 1.0 codec and a SLIP layer;
+the board runs the CNMAT OSC library. SLIP is already what
+`SLIPEncodedSerial` puts on the wire, so nothing on the firmware side is
+special-cased for the browser.
+
+```
+browser page  ⇄  OSC 1.0 packet  ⇄  SLIP frame  ⇄  USB serial  ⇄  this library
+```
+
+Each board gets a matched pair in `examples/`:
+
+```
+examples/GemmaOscuino/GemmaOscuino.ino      ← build and upload this
+examples/GemmaOscuino/GemmaOscuino.html     ← open this
+```
+
+The `.html` sits inside the sketch folder deliberately. Arduino ignores it when
+compiling, and it travels with the sketch when someone copies the folder out of
+the library — which is exactly when a page that depended on a shared script two
+directories up would break.
+
+The generator also renders firmware for boards that run Python rather than
+compiled sketches — a `boards.json` entry with a `firmware` field pairs a page
+with `template-microbit.py` or `template-circuitpython.py` instead of
+`template.ino`, and lands in `extras/python/<Id>Oscuino/` so the Arduino IDE
+never lists a sketch-less folder. Same wire contract, same drift check, same
+page. See `extras/python/README.md`.
+
+## Boards
+
+<!-- BEGIN generated board table — `make generate` writes this, `make check` guards it -->
+
+| Example | Board | FQBN |
+|---------|-------|------|
+| `GemmaOscuino` | Adafruit Gemma M0 | `adafruit:samd:adafruit_gemma_m0` |
+| `PlaygroundOscuino` | Adafruit Circuit Playground Express | `adafruit:samd:adafruit_circuitplayground_m0` |
+| `LilyPadOscuino` | LilyPad Arduino USB | `arduino:avr:LilyPadUSB` |
+| `TeensyOscuino` | Teensy 4.0 / 4.1 | `teensy:avr:teensy40` |
+| `RP2040Oscuino` | Raspberry Pi Pico (RP2040) | `rp2040:rp2040:rpipico` |
+| `ESP32S3Oscuino` | ESP32-S3 | `esp32:esp32:esp32s3` |
+| `M5NanoC6Oscuino` | M5Stack NanoC6 | `esp32:esp32:m5stack_nanoc6` |
+| `MicrobitOscuino` | BBC micro:bit (MicroPython) | interpreted, `extras/python/` |
+| `FruitJamOscuino` | Adafruit Fruit Jam | interpreted, `extras/python/` |
+| `CircuitPythonOscuino` | CircuitPython (Adafruit boards) | interpreted, `extras/python/` |
+| `QTPyS2Oscuino` | Adafruit QT Py ESP32-S2 | `esp32:esp32:adafruit_qtpy_esp32s2` |
+| `WaveshareP4PoEOscuino` | Waveshare ESP32-P4-POE-ETH | `esp32:esp32:waveshare_p4_poe_eth` |
+| `TEncoderProOscuino` | LilyGO T-Encoder-Pro | `esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,CDCOnBoot=cdc,PartitionScheme=app3M_fat9M_16MB` |
+| `XiaoC3Oscuino` | Seeed XIAO ESP32-C3 | `esp32:esp32:XIAO_ESP32C3` |
+| `XiaoC3WiFi` | Seeed XIAO ESP32-C3, WiFi twin | `esp32:esp32:XIAO_ESP32C3` |
+| `XiaoC3BLE` | Seeed XIAO ESP32-C3, BLE twin | `esp32:esp32:XIAO_ESP32C3` |
+| `EggC3Oscuino` | ESP32-C3 SuperMini with 0.42" OLED (sold as EGG) | `esp32:esp32:esp32c3:CDCOnBoot=cdc` |
+| `EggC3WiFi` | ESP32-C3 SuperMini with 0.42" OLED (sold as EGG), WiFi twin | `esp32:esp32:esp32c3:CDCOnBoot=cdc` |
+| `XiaoRoundOscuino` | XIAO + Round Display | `Seeeduino:samd:seeed_XIAO_m0` |
+| `XiaoNrf52Oscuino` | Seeed XIAO nRF52840 Sense | `Seeeduino:nrf52:xiaonRF52840Sense` |
+| `XiaoC6ExpOscuino` | Seeed XIAO ESP32-C6 + Expansion Board | `esp32:esp32:XIAO_ESP32C6` |
+| `XiaoC6ExpWiFi` | Seeed XIAO ESP32-C6 + Expansion Board, WiFi twin | `esp32:esp32:XIAO_ESP32C6` |
+| `XiaoC6ExpBLE` | Seeed XIAO ESP32-C6 + Expansion Board, BLE twin | `esp32:esp32:XIAO_ESP32C6` |
+| `XiaoMG24BLE` | Seeed XIAO MG24 (Sense) | `SiliconLabs:silabs:xiao_mg24:protocol_stack=ble_silabs` |
+| `FruitJamOscuino` | Adafruit Fruit Jam (Arduino) | `rp2040:rp2040:adafruit_fruitjam` |
+| `ElecrowPico2Oscuino` | Elecrow All-in-one Starter Kit for Pico 2 | `rp2040:rp2040:rpipico2` |
+
+<!-- END generated board table -->
+
+Generated from `boards.json`, so it cannot fall behind the board list the way a
+hand-kept copy did — that one listed 9 of the 23 boards here.
+
+There is deliberately no build-size column. A byte count is a property of the
+core version and its compiler rather than of this repository: update a core and
+every figure changes with no commit here to notice, and nothing in the suite
+ever compared one to a real build, so they rotted silently — the numbers removed
+here were stale by up to 256 bytes. Whether a sketch fits is enforced where it
+matters, by `arduino-cli` failing the build when it does not and by CI compiling
+a subset on every push. Measured sizes for the parts where fit is actually tight,
+carrying their date and their denominator, live in [BOARDS.md](../../BOARDS.md).
+
+The python rows have no build at all: the interpreter is the build, and
+`extras/python/test_host.py` is what proves their codecs before hardware does.
+
+## Address space
+
+The standard Oscuino set, so these sketches also answer the CNMAT Max/MSP
+patches and any existing `Serial*` example's client. All traffic is an
+`OSCBundle` in both directions.
+
+| Address | Effect |
+|---------|--------|
+| `/d/<pin>` | `digitalRead` → `/d/<pin> <int>` |
+| `/d/<pin>/u` | `digitalRead` with pullup → `/d/<pin>/u <int>` |
+| `/d/<pin> <int>` | `digitalWrite` |
+| `/d/<pin> <float>` | `analogWrite`, 0.0 … 1.0 |
+| `/a/<pin>` | `analogRead` → `/a/<pin> <int>` |
+| `/a/<pin> <int>` \| `<float>` | write on the matching digital pin |
+| `/tone/<pin> <freq> [<ms>]` | square wave; no argument stops it |
+| `/s/m` `/s/d` `/s/a` | micros, digital pin count, analog pin count |
+| `/s/l <int>` | set `LED_BUILTIN` (only where the board has one) |
+| `/rgb <r> <g> <b>` | every pixel → echoed |
+| `/rgb/<n> <r> <g> <b>` | one pixel → echoed |
+| `/rgb/bright <int>` | 0…255 → echoed |
+
+Boards with hardware beyond pins answer in the capability vocabulary of
+[`ADDRESSES.md`](../../ADDRESSES.md) — `/rgb`, `/display/text`, `/buzz`, `/btn`,
+`/imu`, and the rest — named by what the thing *is* rather than by which board
+it is on. `test/test-namespace.mjs` fails on any address outside that document
+and `make test` runs it, so a new board cannot quietly invent a dialect.
+
+Each sketch announces `/enq <ExampleName>` once, from `setup()`, and answers
+`/enq` again whenever asked — with a bundle naming itself and then one
+`/enq/<capability>` line per thing it actually has, carrying that thing's shape
+(`/enq/rgb 5`, `/enq/display 128 64`, `/enq/imu 6`). Absence is silence: a
+capability the board lacks is simply missing from the bundle. On a native-USB
+board `setup()` runs when the board powers up, not when the browser opens the
+port, so the boot announcement is usually lost — which is why asking is the
+reliable path.
+
+### One page for every board
+
+`oscuino.html` is generated from the same template with no board identity at
+all, and builds itself from whatever the board announces: it sends `/enq`,
+reads the `/enq` lines, and shows a panel per capability, hiding the rest. It
+speaks three transports — Web Serial, Web Bluetooth (Nordic UART Service) and
+HTTP (`POST /osc`, `GET /state`, `GET /enq`) — over one SLIP and OSC codec, so
+the same page drives a board over USB, over the air, or across the network.
+
+The per-board pages remain, generated from the same template with that board's
+chips, USB filters and notes; they are the friendlier front door, and
+`oscuino.html` is the one that works on a board it has never heard of.
+`test/test-panels.mjs` cross-checks the capability table in `ADDRESSES.md`
+against the page's panels, so a capability added to the contract and forgotten
+in the page fails the suite.
+
+Cap-touch and NeoPixel variants are deliberately absent — they need external
+libraries, and an example that will not compile without a second install is a
+poor front door. The existing `SerialOscuinoGemmaM0` and
+`SerialOscuinoAdaFruitPlayGroundExpresswithBundles` examples still cover those.
+
+`/rgb` is shaped around that rule rather than against it. Where the core drives
+the pixel itself — any board whose variant sets `RGB_BUILTIN`, which is most of
+the ESP32 family — the sketch answers `/rgb`, `/rgb/<n>` and `/rgb/bright` and
+announces `/enq/rgb`, costing no library at all. Where the pixel instead needs
+Adafruit_NeoPixel the capability stays off and the sketch says nothing about it,
+until you build with `-DOSC_RGB_USE_NEOPIXEL`, whereupon the same three
+addresses appear. The default install is unchanged either way. Boards whose
+colour LED is a DotStar or three discrete pins announce nothing in both modes:
+the first wants another library again, and the second's polarity is per-board
+and untested here.
+
+## Using it
+
+Web Serial needs a **secure context**. `https://` or `http://localhost` only —
+double-clicking the file gives a `file://` origin where the page renders but
+`navigator.serial` is missing and Connect is disabled.
+
+```bash
+cd examples/GemmaOscuino && python3 -m http.server 8000
+```
+
+then open `http://localhost:8000/GemmaOscuino.html`. Chrome/Edge 89+,
+Firefox 151+, or Chrome for Android 149+.
+
+Each page filters the browser's port chooser to its own board's USB
+vendor/product ids, so you get one entry instead of every serial device on the
+machine. Clones and bootloader PIDs will not match — tick **show all ports** to
+drop the filter rather than concluding the board is dead.
+
+## Regenerating
+
+Every `<Id>Oscuino` pair — in `examples/` and in `extras/python/` — is
+**generated**. Editing one directly will be overwritten and `make check` will
+fail first.
+
+```bash
+cd extras/webserial
+make generate     # write the pairs
+make check        # fail if any generated file drifted from the template
+make test         # codec bytes + per-board page wiring
+make all          # check + test
+```
+
+| File | Role |
+|------|------|
+| `boards.json` | the board table — the only file you edit to add a board |
+| `template.html` | the page, with `{{KEY}}` holes |
+| `template.ino` | the sketch, same |
+| `template-microbit.py` | MicroPython firmware for the micro:bit, same |
+| `template-circuitpython.py` | CircuitPython firmware, same |
+| `template-boot.py` | the boot.py that enables CircuitPython's data channel |
+| `render.mjs` | substitution, shared by generate and check so neither can disagree |
+| `generate.mjs` | writes the pairs |
+| `check.mjs` | re-renders in memory, diffs against disk, reports the first differing line |
+| `test/test-codec.mjs` | OSC bytes against hand-computed sequences, and SLIP at every chunk boundary |
+| `test/test-pages.mjs` | per-board: script parses, identity matches, chips match, filters are numbers |
+
+### Why N copies of the codec
+
+Each page carries its own ~250-line codec. That is a real duplication, accepted
+because self-containment is the property that makes these useful — they work
+from a USB stick at a bench with no network, and they survive being copied out
+of the library. `check.mjs` is what keeps the duplication honest: the copies
+cannot drift silently, because a template change that was never regenerated
+fails the check, and a hand-edited page fails it too.
+
+### Naming an example
+
+`<Board><Chip><Transport>`, in that order, and the transport last:
+
+| part | rule | examples |
+|---|---|---|
+| Board | the product or family name, as its maker writes it | `Xiao`, `Egg`, `PicoMate`, `FruitJam` |
+| Chip | only when the board name alone is ambiguous | `XiaoC3`, `XiaoC6Exp`, `XiaoMG24`, `XiaoS3Sense` |
+| Transport | `Oscuino` = USB serial, `WiFi` = UDP + HTTP, `BLE` = Bluetooth LE | `XiaoC3Oscuino`, `XiaoC3WiFi`, `XiaoC3BLE` |
+
+Seeed sells five different XIAOs, so `Xiao` alone names nothing — hence the
+chip. Conversely `PicoMate` and `FruitJam` are unique products and take no
+chip. The transport goes last because a board's twins should sort together.
+
+`XiaoNrf52Oscuino` was `XiaoBLEOscuino` until 2026-09-04, and the rename is
+the reason this table exists: `BLE` sat in the *board* slot there, naming the
+nRF52840, while `XiaoC6ExpBLE` and `XiaoMG24BLE` use the same word in the
+*transport* slot. One word, two meanings, decided by position — the sort of
+thing that reads fine to whoever wrote it and to nobody else. Note that the
+board's advertised BLE name changed with it, so it appears in a Web Bluetooth
+picker as `XiaoNrf52Oscuino`.
+
+Three names deliberately break the pattern, and stay broken:
+
+* `OSCEsplora` — the 2013 original, predating `Oscuino` entirely. It is cited
+  by name in the README and in outside material; renaming it would break
+  references for no gain. `EsploraOscuino` is its modern counterpart, and the
+  pair reading in opposite orders is the price of not rewriting history.
+* `CircuitPlaygroundSensors` — the sensor half of the board. It cannot be
+  `PlaygroundOscuino`, which is the generated pin half and a different sketch.
+* `RP2040Oscuino`, `ESP32S3Oscuino` — chip-only, because they target generic
+  dev boards with no product name to use.
+
+### Adding a board
+
+Add an entry to `boards.json` and run `make generate`. Nothing else needs
+touching. Fields: `id` (becomes `<id>Oscuino`), `name`, `mcu`, `fqbn`,
+`nativeUSB`, `usbFilters`, `chips`, `note`; optional `pinClamp` for variants
+whose `NUM_*_PINS` macros overstate what is routed to pads, and `tone: false`
+for a core with no `tone()`. A `firmware` field (`microbit` or
+`circuitpython`) renders the entry against the matching python template into
+`extras/python/` instead; `fqbn` stays empty and `usbProductId` may be
+omitted from a filter to match a whole vendor.
+
+Three fields exist for boards whose sketch is written by hand:
+
+* `handwritten: true` — generate the page only, never the `.ino`. Boards with
+  real peripherals (a display, a radio, an IMU) have sketches no template can
+  produce, but they still want a generated page; without this the generator
+  would overwrite the sketch and `make check` would demand it back.
+* `sketch` — the sketch folder name, when it is not `<id>Oscuino`. The WiFi and
+  BLE twins use it, since three entries share one board and one `id` cannot.
+* `transport` — `serial` (default), `ble` or `http`: which transport the page
+  selects on load. It is a starting position, not a restriction; the page
+  offers whichever ones the browser supports.
+
+`handwritten` and `firmware` are mutually exclusive — a python firmware is
+always generated — and the generator says so rather than picking one.
+
+## The one non-obvious firmware detail
+
+`endofPacket()` must be called **before** `available()` on every pass of the
+receive loop. Inside `SLIPEncodedSerial`, `available()` drives the SLIP state
+machine, and calling it while that machine sits on a packet-terminating `END`
+with more bytes buffered behind resets the state to `CHAR` — silently eating the
+packet boundary. The stock examples get the ordering right but block in the
+outer `while`; `pollOSC()` in these sketches returns instead, so a sketch with
+other work to do in `loop()` keeps doing it.

@@ -1,0 +1,879 @@
+<!DOCTYPE html>
+<!--
+  Running this page. Web Serial needs a real browser and a real origin, and
+  the two ways of getting that wrong both look like the page is broken:
+
+    * Opening the file from disk (file://...) does not work. Chrome refuses
+      Web Serial there because a permission cannot be persisted against an
+      opaque origin. Serve it and use the served URL:
+
+          cd examples/PyBadgeOscuino && python3 -m http.server 8768
+          open -a "Google Chrome" http://localhost:8768/PyBadgeOscuino.html
+
+    * An embedded or sandboxed webview will report navigator.serial as
+      present and then show an EMPTY port picker, because it can enumerate
+      no serial devices at all. A correct filter with nothing listed means
+      the browser, not this page. Use Chrome or Edge proper.
+
+  python3 -m http.server sends no Cache-Control, so Chrome re-serves a stale
+  copy and edits appear to do nothing. Hard reload (Cmd-Shift-R).
+
+  The PyBadge enumerates as Adafruit 0x239a.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PyBadge M4 Express &mdash; the whole badge over OSC</title>
+<style>
+  :root {
+    --bg:#0d1017; --panel:#161a23; --panel-2:#1d2331; --line:#2b3242;
+    --text:#dde3ec; --dim:#8b95a7; --accent:#fbbf24; --rx:#86efac; --err:#fca5a5;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:24px; background:var(--bg); color:var(--text);
+         font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  p.lede { color:var(--dim); margin:0 0 20px; max-width:74ch; }
+  code { font-family:var(--mono); font-size:.92em; color:var(--accent); }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+           padding:16px; margin-bottom:16px; }
+  .row { display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
+  .row + .row { margin-top:12px; }
+  button { background:var(--panel-2); color:var(--text); border:1px solid var(--line);
+           border-radius:8px; padding:9px 14px; font-size:14px; cursor:pointer; }
+  button:hover:not(:disabled) { border-color:var(--accent); }
+  button:disabled { opacity:.45; cursor:default; }
+  button.primary { background:var(--accent); color:#241a00; border-color:var(--accent);
+                   font-weight:600; }
+  label { color:var(--dim); font-size:12px; text-transform:uppercase; letter-spacing:.06em; }
+  input[type=text] { background:var(--panel-2); color:var(--text); border:1px solid var(--line);
+           border-radius:8px; padding:8px 10px; font-size:14px; width:165px; }
+  input[type=number] { background:var(--panel-2); color:var(--text); border:1px solid var(--line);
+           border-radius:8px; padding:8px 10px; font-size:14px; width:80px; }
+  input[type=color] { width:50px; height:36px; background:none; border:1px solid var(--line);
+           border-radius:8px; }
+  input[type=range] { width:140px; }
+  .dot { width:9px; height:9px; border-radius:50%; background:#444c5c; display:inline-block; }
+  .dot.on { background:var(--rx); }
+  .grid { display:grid; grid-template-columns:1fr 330px; gap:16px; align-items:start; }
+  @media (max-width:900px){ .grid{grid-template-columns:1fr;} }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  td { padding:5px 0; }
+  td.k { color:var(--dim); }
+  td.v { text-align:right; font-family:var(--mono); }
+  .bar { height:6px; background:var(--panel-2); border-radius:3px; overflow:hidden; }
+  .bar > i { display:block; height:100%; background:var(--accent); width:0; }
+  .stale { opacity:.35; }
+  /* the badge's own controls, laid out like the board */
+  .badge { display:grid; grid-template-columns:120px 1fr 120px; gap:14px; align-items:center; }
+  .dpad { display:grid; grid-template-columns:repeat(3,34px); grid-template-rows:repeat(3,34px);
+          gap:4px; justify-content:center; }
+  .btn { background:var(--panel-2); border:1px solid var(--line); border-radius:7px;
+         display:flex; align-items:center; justify-content:center; font-size:12px;
+         font-family:var(--mono); color:var(--dim); transition:background .06s,border-color .06s; }
+  .btn.hit { background:var(--accent); color:#241a00; border-color:var(--accent); font-weight:700; }
+  .ab { display:flex; gap:8px; justify-content:center; }
+  .ab .btn { width:46px; height:46px; border-radius:50%; font-size:15px; }
+  .ss { display:flex; gap:8px; justify-content:center; margin-top:10px; }
+  .ss .btn { width:56px; height:26px; font-size:11px; }
+  .pixels { display:flex; gap:8px; justify-content:center; margin-top:4px; }
+  .px { width:36px; height:36px; border-radius:50%; border:1px solid var(--line);
+        background:#111; cursor:pointer; }
+  #tilt { width:100%; background:#0a0d13; border:1px solid var(--line); border-radius:8px; }
+  #log { font-family:var(--mono); font-size:12px; color:var(--dim); background:#0a0d13;
+         border:1px solid var(--line); border-radius:8px; padding:10px; height:96px;
+         overflow-y:auto; white-space:pre-wrap; }
+  .warn { color:var(--err); }
+  .bt { fill:#1b2433; stroke:#2b3242; stroke-width:2; transition:fill .05s; }
+  .bt.hit { fill:var(--accent); stroke:var(--accent); }
+  .lbl { fill:var(--dim); font-size:19px; text-anchor:middle; font-family:var(--mono);
+         pointer-events:none; }
+  .lbl.sm { font-size:12px; }
+</style>
+</head>
+<body>
+
+<h1>PyBadge M4 Express</h1>
+<p class="lede">
+  Eight buttons, the light sensor, the battery divider and the LIS3DH arrive as
+  one bundle every <code>/rate</code> ms, 50 by default &mdash;
+  <code>/state</code>, <code>/btn</code>, <code>/light</code>, <code>/bat</code>
+  and <code>/imu</code> &mdash; sampled in one pass so every reading belongs to
+  the same instant. The buttons come back as eight ints, one per button, read on
+  the badge through a 74HC165 shift register. Ask any of those addresses with no
+  arguments and it answers once, on the same address, without waiting for the
+  stream. Going the other way, the page drives the 160&times;128 screen
+  (<code>/display</code>), the DAC speaker (<code>/buzz</code>), all five
+  NeoPixels (<code>/rgb</code>) and the red LED (<code>/s/l</code>); every write
+  is echoed back, so the readouts here follow the board rather than the click.
+  On connect it asks <code>/enq</code>; the accelerometer and microphone panels
+  follow whether <code>/enq/imu</code> and <code>/enq/mic</code> are in the answer.
+</p>
+
+<div class="panel">
+  <div class="row">
+    <button id="connect" class="primary">Connect</button>
+    <button id="disconnect" disabled>Disconnect</button>
+    <span class="dot" id="dot"></span><span id="state">not connected</span>
+    <span style="flex:1"></span>
+    <label><input type="checkbox" id="allPorts" style="vertical-align:-2px"> show all ports</label>
+  </div>
+</div>
+
+<div class="grid">
+  <div>
+    <div class="panel">
+      <!-- The PyBadge drawn to scale: 86 x 54 mm, 10 units per mm, so every
+           position below is a real millimetre measurement rather than a guess.
+           A photograph would do as well, but no PyBadge image with a clear
+           reuse licence exists (the Esplora page uses a CC BY-SA one from
+           Wikimedia; there is no equivalent for this board), and drawing it
+           means the overlays are registered to the artwork by construction. -->
+      <svg id="board" viewBox="0 0 860 540" style="width:100%;max-width:620px;display:block;margin:0 auto">
+        <defs>
+          <clipPath id="screenclip"><rect x="250" y="132" width="360" height="266" rx="4"/></clipPath>
+        </defs>
+
+        <rect x="2" y="2" width="856" height="536" rx="26" fill="#0f5132" stroke="#1d7a4d" stroke-width="3"/>
+        <rect x="16" y="16" width="828" height="508" rx="18" fill="none" stroke="#14653e" stroke-width="2"/>
+
+        <!-- 1.8" 160x128 TFT, active area 35 x 28 mm, centred across the top -->
+        <rect x="238" y="120" width="384" height="290" rx="8" fill="#0a0d13" stroke="#1d7a4d" stroke-width="2"/>
+        <rect id="screen" x="250" y="132" width="360" height="266" rx="4" fill="#000"/>
+        <g clip-path="url(#screenclip)">
+          <text id="scr1" x="262" y="162"  fill="#fff" font-family="ui-monospace,monospace" font-size="22"></text>
+          <text id="scr2" x="262" y="208" fill="#fff" font-family="ui-monospace,monospace" font-size="30"></text>
+          <g id="scrboxes"></g>
+        </g>
+
+        <!-- five NeoPixels along the bottom edge -->
+        <circle class="np" id="np0" cx="150" cy="500" r="17" fill="#111" stroke="#1d7a4d" stroke-width="2"/>
+        <circle class="np" id="np1" cx="290" cy="500" r="17" fill="#111" stroke="#1d7a4d" stroke-width="2"/>
+        <circle class="np" id="np2" cx="430" cy="500" r="17" fill="#111" stroke="#1d7a4d" stroke-width="2"/>
+        <circle class="np" id="np3" cx="570" cy="500" r="17" fill="#111" stroke="#1d7a4d" stroke-width="2"/>
+        <circle class="np" id="np4" cx="710" cy="500" r="17" fill="#111" stroke="#1d7a4d" stroke-width="2"/>
+
+        <!-- d-pad, lower left -->
+        <rect class="bt" id="s_up"    x="106" y="150" width="46" height="46" rx="8"/>
+        <rect class="bt" id="s_left"  x="56"  y="200" width="46" height="46" rx="8"/>
+        <rect class="bt" id="s_right" x="156" y="200" width="46" height="46" rx="8"/>
+        <rect class="bt" id="s_down"  x="106" y="250" width="46" height="46" rx="8"/>
+        <text x="129" y="180" class="lbl">▲</text><text x="79"  y="230" class="lbl">◀</text>
+        <text x="179" y="230" class="lbl">▶</text><text x="129" y="280" class="lbl">▼</text>
+
+        <!-- B and A, lower right; B is to the LEFT of A on this board -->
+        <circle class="bt" id="s_b" cx="700" cy="230" r="30"/>
+        <circle class="bt" id="s_a" cx="784" cy="180" r="30"/>
+        <text x="700" y="238" class="lbl">B</text><text x="784" y="188" class="lbl">A</text>
+
+        <!-- select and start, centre bottom -->
+        <rect class="bt" id="s_select" x="48" y="60" width="92" height="32" rx="15"/>
+        <rect class="bt" id="s_start"  x="720" y="60" width="92" height="32" rx="15"/>
+        <text x="94" y="81" class="lbl sm">SELECT</text>
+        <text x="766" y="81" class="lbl sm">START</text>
+      </svg>
+      <div style="color:var(--dim);font-size:12px;text-align:center;margin-top:8px">
+        drawn to scale — 86 &times; 54 mm. Press a button on the badge and it lights here.
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="row">
+        <label>screen</label>
+        <input type="text" id="l1" value="OSC for Arduino" maxlength="22">
+        <input type="text" id="l2" value="PyBadge" maxlength="22">
+        <button id="settext">show</button>
+      </div>
+      <div class="row">
+        <label for="bg">background</label>
+        <input type="color" id="bg" value="#101a3c">
+        <button id="fill">fill</button>
+        <button id="paint">paint boxes</button>
+        <label for="lite">backlight</label>
+        <input type="range" id="lite" min="0" max="255" value="255">
+      </div>
+      <div class="row">
+        <label>speaker</label>
+        <input type="number" id="freq" value="660" min="0" max="8000">
+        <label for="ms">ms</label>
+        <input type="number" id="ms" value="150" min="10" max="3000">
+        <button id="beep">beep</button>
+        <button data-note="262">C</button><button data-note="294">D</button>
+        <button data-note="330">E</button><button data-note="392">G</button>
+        <button data-note="523">C↑</button>
+        <button id="arp">arpeggio</button>
+        <!-- filled from the /buzz echo: the badge fills in the defaults and
+             clamps the range, so this is the note it really played -->
+        <span id="buzzback" style="color:var(--dim);font-size:12px;font-family:var(--mono)">–</span>
+      </div>
+      <div class="row">
+        <label>all pixels</label>
+        <input type="color" id="pxall" value="#ff8800">
+        <button id="pxoff">off</button>
+        <button id="rainbow">rainbow</button>
+        <label for="bright">bright</label>
+        <input type="range" id="bright" min="0" max="255" value="40">
+        <button id="led">red LED</button>
+      </div>
+      <div class="row">
+        <!-- One /rate for the whole board: it is the period of the /state
+             bundle AND of /mic, and 0 stops both. "read once" asks the four
+             reading addresses with no arguments, which is how you get a
+             sample while the stream is stopped. -->
+        <label for="rate">stream ms</label>
+        <input type="number" id="rate" value="50" min="0" max="5000" step="10">
+        <button id="setrate">set rate</button>
+        <button id="stop">stop stream</button>
+        <button id="readonce">read once</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <canvas id="tilt" width="320" height="120"></canvas>
+      <div style="color:var(--dim);font-size:13px;margin-top:6px">tilt — <code>/imu</code> x/y, one g reaches the edge</div>
+    </div>
+  </div>
+
+  <div>
+    <div class="panel">
+      <table>
+        <tr><td class="k">buttons down (<code>/btn</code>)</td><td class="v" id="btnlist">–</td></tr>
+        <tr><td class="k">light (<code>/light</code>)</td><td class="v" id="light">–</td></tr>
+        <tr><td colspan="2"><div class="bar"><i id="lightb"></i></div></td></tr>
+        <tr><td class="k">battery (<code>/bat</code>)</td><td class="v" id="batt">–</td></tr>
+        <tr><td colspan="2"><div class="bar"><i id="battb"></i></div></td></tr>
+        <tr><td class="k">accel x, g (<code>/imu</code>)</td><td class="v" id="ax">–</td></tr>
+        <tr><td class="k">accel y, g</td><td class="v" id="ay">–</td></tr>
+        <tr><td class="k">accel z, g</td><td class="v" id="az">–</td></tr>
+        <tr><td class="k">accelerometer (<code>/enq/imu</code>)</td><td class="v" id="ok">–</td></tr>
+        <tr><td class="k">stream (<code>/state</code>)</td><td class="v" id="hz">–</td></tr>
+        <tr><td class="k">period echoed (<code>/rate</code>)</td><td class="v" id="rateback">–</td></tr>
+      </table>
+    </div>
+    <div class="panel" id="micpanel" style="display:none">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px">
+        <label>microphone</label>
+        <span id="micclip" style="display:none;font-family:var(--mono);font-size:11px;
+              color:#241a00;background:var(--err);padding:1px 6px;border-radius:3px">CLIP</span>
+      </div>
+
+      <canvas id="scope" width="300" height="72"
+              style="width:100%;height:72px;background:#0a0d13;border:1px solid var(--line);border-radius:6px"></canvas>
+      <div style="color:var(--dim);font-size:11px;margin:4px 0 10px">
+        waveform — normalised per frame, shows shape not level
+      </div>
+
+      <canvas id="michist" width="300" height="64"
+              style="width:100%;height:64px;background:#0a0d13;border:1px solid var(--line);border-radius:6px"></canvas>
+      <div style="color:var(--dim);font-size:11px;margin:4px 0 10px">
+        level history — last 15 s, −90 dBFS at the floor to 0 at the top
+      </div>
+
+      <table>
+        <tr><td class="k">level</td><td class="v" id="miclevel">–</td></tr>
+        <tr><td colspan="2"><div class="bar"><i id="micb"></i></div></td></tr>
+        <tr><td class="k">peak (1 s hold)</td><td class="v" id="micpeak">–</td></tr>
+        <tr><td class="k">sample rate</td><td class="v" id="micrate">–</td></tr>
+        <tr><td class="k">gain (<code>/mic/gain</code>)</td><td class="v" id="micgainv">–</td></tr>
+      </table>
+      <div class="row" style="margin-top:8px">
+        <label for="micgain">gain</label>
+        <input type="number" id="micgain" value="8" min="1" max="64">
+        <button id="setgain">set</button>
+      </div>
+      <div style="color:var(--dim);font-size:12px;margin-top:8px">
+        EdgeBadge PDM microphone, on the same <code>/rate</code> tick as the
+        stream bundle. <code>rms</code> and <code>peak</code> arrive at full
+        scale, 0–32767, after the sketch's <code>MIC_GAIN</code> — so they are
+        gain-dependent, and CLIP lights when a transient pins 32767. Measured on
+        this badge at <code>MIC_GAIN</code> 16, corrected for the rms scaling
+        bug those captures predate: a quiet room floors near −34 dBFS, rising
+        about 26.6 dB to the loudest frame. At the shipped gain of 8 the floor
+        should sit roughly 6 dB lower again — arithmetic, not a fresh capture.
+      </div>
+    </div>
+    <div class="panel" style="padding:10px"><div id="log">idle</div></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+function logLine(cls, msg) {
+  const el = $("log");
+  el.textContent += `\n${new Date().toLocaleTimeString()}  ${msg}`;
+  el.scrollTop = el.scrollHeight;
+  if (cls === "warn") el.classList.add("warn");
+}
+
+/* ============================================================
+   1. OSC
+   ============================================================ */
+const dec = new TextDecoder(), enc = new TextEncoder();
+
+class Reader {
+  constructor(b){ this.b=b; this.pos=0; this.dv=new DataView(b.buffer,b.byteOffset,b.byteLength); }
+  get left(){ return this.b.length - this.pos; }
+  int32(){ const v=this.dv.getInt32(this.pos); this.pos+=4; return v; }
+  float32(){ const v=this.dv.getFloat32(this.pos); this.pos+=4; return v; }
+  float64(){ const v=this.dv.getFloat64(this.pos); this.pos+=8; return v; }
+  int64(){ const v=this.dv.getBigInt64(this.pos); this.pos+=8; return v; }
+  string(){ let e=this.pos; while(e<this.b.length && this.b[e]!==0) e++;
+            const s=dec.decode(this.b.subarray(this.pos,e)); this.pos=(e+4)&~3; return s; }
+  blob(){ const n=this.int32();
+          if(n<0 || n>this.left){ this.pos=this.b.length; return new Uint8Array(0); }
+          const v=this.b.subarray(this.pos,this.pos+n); this.pos+=(n+3)&~3; return v; }
+}
+
+function decodeMessage(bytes){
+  const r = new Reader(bytes);
+  const address = r.string();
+  const args = [];
+  if (r.left > 0) {
+    const tags = r.string();
+    if (tags.startsWith(",")) for (const t of tags.slice(1)) {
+      // Every tag this library can emit. Blobs matter in particular: the
+      // reader has always had blob(), but decodeMessage never called it, so a
+      // ',iiib' message like /mic decoded to three arguments and the waveform
+      // silently never drew. An unknown tag still has to bail, because
+      // without its width there is no way to find the next argument.
+      if (t==="i") args.push(r.int32());
+      else if (t==="f") args.push(r.float32());
+      else if (t==="s") args.push(r.string());
+      else if (t==="b") args.push(r.blob());
+      else if (t==="h") args.push(r.int64());
+      else if (t==="d") args.push(r.float64());
+      else if (t==="T") args.push(true);
+      else if (t==="F") args.push(false);
+      else if (t==="N") args.push(null);
+      else if (t==="I") args.push("impulse");
+      else return {address,args};
+    }
+  }
+  return {address,args};
+}
+
+// A bundle is "#bundle", an 8-byte timetag, then size-prefixed messages. The
+// badge says everything as one -- the hello and every stream frame -- so the
+// members are decoded here and handed on one at a time.
+function decodePacket(bytes){
+  if(bytes.length>=16 && bytes[0]===0x23){                 // "#bundle"
+    const dv=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+    const out=[]; let pos=16;
+    while(pos+4<=bytes.length){
+      const size=dv.getInt32(pos); pos+=4;
+      if(size<=0 || pos+size>bytes.length) break;
+      out.push(decodeMessage(bytes.subarray(pos,pos+size)));
+      pos+=size;
+    }
+    return {bundle:true, packets:out};
+  }
+  return decodeMessage(bytes);
+}
+
+const pad4 = b => { const n=(b.length+3)&~3; const o=new Uint8Array(n); o.set(b); return o; };
+
+function encodeMessage(address, args){
+  const parts=[pad4(enc.encode(address+"\0"))];
+  let tags=","; for(const a of args) tags += (typeof a==="string") ? "s":"i";
+  parts.push(pad4(enc.encode(tags+"\0")));
+  for(const a of args){
+    if(typeof a==="string") parts.push(pad4(enc.encode(a+"\0")));
+    else { const b=new Uint8Array(4); new DataView(b.buffer).setInt32(0,a|0); parts.push(b); }
+  }
+  const out=new Uint8Array(parts.reduce((n,p)=>n+p.length,0));
+  let o=0; for(const p of parts){ out.set(p,o); o+=p.length; }
+  return out;
+}
+
+/* ============================================================
+   2. SLIP
+   ============================================================ */
+const END=0xC0, ESC=0xDB, ESC_END=0xDC, ESC_ESC=0xDD;
+
+function slipEncode(payload){
+  const out=[END];
+  for(const b of payload){
+    if(b===END) out.push(ESC,ESC_END);
+    else if(b===ESC) out.push(ESC,ESC_ESC);
+    else out.push(b);
+  }
+  out.push(END);
+  return Uint8Array.from(out);
+}
+
+class SlipDecoder {
+  constructor(){ this.acc=[]; this.esc=false; }
+  transform(chunk, controller){
+    for(const b of chunk){
+      if(this.esc){ this.acc.push(b===ESC_END?END:b===ESC_ESC?ESC:b); this.esc=false; }
+      else if(b===ESC){ this.esc=true; }
+      else if(b===END){ if(this.acc.length){ controller.enqueue(Uint8Array.from(this.acc)); this.acc.length=0; } }
+      else this.acc.push(b);
+    }
+  }
+  flush(){ this.acc.length=0; }
+}
+
+/* ============================================================
+   3. Web Serial
+   ============================================================ */
+const FILTERS=[{usbVendorId:0x239a}];        // Adafruit
+let port=null, writer=null, reader=null, pipeDone=null, pipeClosed=null;
+
+async function connect(){
+  const opts = $("allPorts").checked ? {} : {filters:FILTERS};
+  const chosen = await navigator.serial.requestPort(opts);
+  await chosen.open({baudRate:115200});
+  port = chosen;                          // a port that would not open is never held
+  writer = port.writable.getWriter();
+  // pipeTo rather than pipeThrough, so disconnect() can wait for the pipe to
+  // let go of port.readable: Chrome will not close a port whose stream is locked.
+  const slip = new TransformStream(new SlipDecoder());
+  pipeClosed = port.readable.pipeTo(slip.writable).catch(()=>{});
+  reader = slip.readable.getReader();
+  pipeDone = readLoop();
+  setConnected(true);
+  logLine("", "connected");
+  // The boot hello is lost to USB enumeration, so ask for it: the answer says
+  // which of the optional panels this particular badge has earned.
+  await send("/enq",[]);
+}
+
+async function readLoop(){
+  try { for(;;){ const {value,done}=await reader.read(); if(done) break; try { onFrame(value); } catch (e) { logLine("!", "render: " + e); } } }
+  catch(e){ logLine("warn","read error: "+e.message); }
+}
+
+async function disconnect(){
+  try{ if(reader){ await reader.cancel(); reader.releaseLock(); } }catch{}
+  try{ if(pipeClosed) await pipeClosed; }catch{}
+  try{ if(pipeDone) await pipeDone; }catch{}
+  try{ if(writer) writer.releaseLock(); }catch{}
+  try{ if(port) await port.close(); }catch(e){ logLine("warn","port close failed: "+e.message); }
+  port=writer=reader=pipeDone=pipeClosed=null;
+  setConnected(false);
+  logLine("","disconnected");
+}
+
+// Never hand the device a write whose length is a multiple of the endpoint
+// size: the host ends such a transfer with a zero-length packet, and some CDC
+// stacks never release the bank it lands in. One extra END closes an empty
+// frame, which every SLIP decoder skips, so it costs nothing.
+const USB_ENDPOINT=64;
+function padAwayZLP(f){
+  if(f.length % USB_ENDPOINT !== 0) return f;
+  const o=new Uint8Array(f.length+1); o.set(f); o[f.length]=END; return o;
+}
+
+async function send(address,args){
+  if(!writer) return;
+  try{ await writer.write(padAwayZLP(slipEncode(encodeMessage(address,args)))); }
+  catch(e){ logLine("warn","write failed: "+e.message); }
+}
+
+const hex2rgb = h => [parseInt(h.slice(1,3),16),parseInt(h.slice(3,5),16),parseInt(h.slice(5,7),16)];
+
+/* ============================================================
+   4. Inbound
+   ============================================================ */
+// /btn carries eight ints, 1 = pressed, in the 74HC165's bit order, which
+// Adafruit's board definition fixes as left, up, down, right, select, start,
+// A, B. Argument i of the message lights BUTTONS[i] on the drawing.
+const BUTTONS      = ["s_left","s_up","s_down","s_right","s_select","s_start","s_a","s_b"];
+const BUTTON_NAMES = ["left","up","down","right","select","start","A","B"];
+
+const tiltCtx = $("tilt").getContext("2d");
+let tiltX=0, tiltY=0, frames=0, t0=0;
+
+function drawTilt(){
+  const c=$("tilt"), w=c.width, h=c.height;
+  tiltCtx.clearRect(0,0,w,h);
+  tiltCtx.strokeStyle="#2b3242"; tiltCtx.strokeRect(.5,.5,w-1,h-1);
+  tiltCtx.beginPath(); tiltCtx.moveTo(w/2,0); tiltCtx.lineTo(w/2,h);
+  tiltCtx.moveTo(0,h/2); tiltCtx.lineTo(w,h/2); tiltCtx.stroke();
+  // /imu arrives in g, so one g of tilt puts the dot at the edge
+  const x=w/2+Math.max(-1,Math.min(1,tiltX))*(w/2-12);
+  const y=h/2+Math.max(-1,Math.min(1,tiltY))*(h/2-12);
+  tiltCtx.fillStyle="#fbbf24";
+  tiltCtx.beginPath(); tiltCtx.arc(x,y,9,0,Math.PI*2); tiltCtx.fill();
+}
+drawTilt();
+
+// OSC has no signed-byte type, so the scope arrives as a blob of raw bytes
+// and each one has to be reinterpreted: 200 really means -56.
+const scopeCtx = () => $("scope").getContext("2d");
+
+// Level history: one point per /mic frame, 300 of them. /mic rides the board's
+// /rate, so that is 15 s at the default 50 ms and proportionally longer if the
+// rate is slowed.
+const MIC_HIST = 300;
+const micHist = [];
+let micPeakHold = 0, micPeakHoldAt = 0;
+
+// The sketch measured a quiet room at about -90 dBFS with the driver's default
+// unity gain -- an rms of 1 count out of 32768 -- so that is the bottom of the
+// scale. At the shipped MIC_GAIN of 8 the floor sits far above it.
+const DB_FLOOR = -90;
+const dbfs  = v => v > 0 ? 20*Math.log10(v/32768) : DB_FLOOR;
+const dbPct = d => Math.max(0, Math.min(1, (d - DB_FLOOR) / -DB_FLOOR));
+
+function drawMicHist(){
+  const c=$("michist"), ctx=c.getContext("2d"), w=c.width, h=c.height;
+  ctx.clearRect(0,0,w,h);
+  // horizontal guides every 20 dB
+  ctx.strokeStyle="#212736"; ctx.lineWidth=1;
+  for(let d=-80; d<0; d+=20){
+    const y = h - dbPct(d)*h;
+    ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(w,y); ctx.stroke();
+  }
+  if(!micHist.length) return;
+  const step = w / MIC_HIST;
+  ctx.fillStyle="#fbbf2433"; ctx.strokeStyle="#fbbf24"; ctx.lineWidth=1.5;
+  ctx.beginPath(); ctx.moveTo(0,h);
+  micHist.forEach((d,i)=>{
+    const x = i*step, y = h - dbPct(d)*h;
+    ctx.lineTo(x,y);
+  });
+  ctx.lineTo((micHist.length-1)*step, h);
+  ctx.closePath(); ctx.fill();
+  ctx.beginPath();
+  micHist.forEach((d,i)=>{
+    const x = i*step, y = h - dbPct(d)*h;
+    i ? ctx.lineTo(x,y) : ctx.moveTo(x,y);
+  });
+  ctx.stroke();
+}
+function drawScope(bytes){
+  const c=$("scope"), ctx=scopeCtx(), w=c.width, h=c.height, mid=h/2;
+  ctx.clearRect(0,0,w,h);
+  ctx.strokeStyle="#2b3242"; ctx.beginPath(); ctx.moveTo(0,mid); ctx.lineTo(w,mid); ctx.stroke();
+  ctx.strokeStyle="#fbbf24"; ctx.lineWidth=1.5; ctx.beginPath();
+  for(let i=0;i<bytes.length;i++){
+    const v = bytes[i]>127 ? bytes[i]-256 : bytes[i];
+    const x = i/(bytes.length-1)*w, y = mid-(v/128)*(mid-2);
+    i ? ctx.lineTo(x,y) : ctx.moveTo(x,y);
+  }
+  ctx.stroke();
+}
+
+// The enq bundle: /enq <name>, then one /enq/<capability> [shape] per
+// capability the badge proved it has. Two are optional on this board and they
+// decide the page: /enq/imu means the LIS3DH answered its probe, /enq/mic
+// means the EdgeBadge's PDM microphone passed its signal probe.
+function onHello(name, caps){
+  const list = Object.entries(caps).map(([k,a]) => a.length ? k+" "+a.join(" ") : k);
+  logLine("","board: "+name+" — "+list.join(", "));
+  $("ok").textContent = caps.imu ? "ok" : "not found";
+  if(!caps.imu) logLine("","no accelerometer announced: /imu will not arrive");
+  $("micpanel").style.display = caps.mic ? "" : "none";
+  if(!caps.mic) logLine("","no microphone on this badge");
+  // /mic/gain with no argument is a read, so this fills the gain row in from
+  // the board rather than assuming the sketch's compiled-in default.
+  if(caps.mic) send("/mic/gain",[]);
+  // /rgb announces its count; the strip's brightness has no read, so the
+  // slider stays at the sketch's boot value until something moves it.
+  if(caps.rgb) logLine("", caps.rgb[0]+" NeoPixels announced");
+}
+
+function onFrame(payload){
+  let pkt; try{ pkt=decodePacket(payload); }catch{ return; }
+  if(!pkt.bundle){ onMessage(pkt); return; }
+  let hello=null;
+  for(const m of pkt.packets){
+    if(m.address==="/enq"){ hello={name:m.args[0], caps:{}}; continue; }
+    if(hello && m.address.startsWith("/enq/")){ hello.caps[m.address.slice(5)]=m.args; continue; }
+    onMessage(m);
+  }
+  if(hello) onHello(hello.name, hello.caps);
+}
+
+// Every address that carries a reading, streamed in the bundle or answered to
+// a single-shot request. The rows used to un-stale on /state alone, which was
+// fine while the stream was the only source; with /rate 0 there is no /state
+// and a "read once" answer would have rendered already dimmed.
+const READINGS = new Set(["/state","/btn","/light","/bat","/imu","/mic"]);
+
+function onMessage(m){
+  if(READINGS.has(m.address))
+    document.querySelectorAll(".stale").forEach(n=>n.classList.remove("stale"));
+
+  if(m.address==="/state"){
+    // seq, millis -- the heartbeat of the stream. The readings follow it in
+    // the same bundle.
+    frames++;
+    if(!t0) t0=performance.now();
+    const secs=(performance.now()-t0)/1000;
+    if(secs>0.5) $("hz").textContent = (frames/secs).toFixed(1)+" Hz";
+    return;
+  }
+
+  if(m.address==="/btn"){
+    const down=[];
+    m.args.forEach((v,i)=>{
+      const el=$(BUTTONS[i]); if(el) el.classList.toggle("hit", v===1);
+      if(v===1 && BUTTON_NAMES[i]) down.push(BUTTON_NAMES[i]);
+    });
+    $("btnlist").textContent = down.length ? down.join(" ") : "none";
+    return;
+  }
+
+  if(m.address==="/light"){
+    const light=m.args[0];
+    if(typeof light==="number"){
+      $("light").textContent = light;
+      $("lightb").style.width = Math.min(100, light/1023*100)+"%";
+    }
+    return;
+  }
+
+  if(m.address==="/bat"){
+    const mv=m.args[0];                       // millivolts; the badge did the divider arithmetic
+    if(typeof mv==="number"){
+      const volts = mv/1000;
+      $("batt").textContent = volts.toFixed(2)+" V";
+      $("battb").style.width = Math.max(0,Math.min(100,(volts-3.0)/(4.2-3.0)*100))+"%";
+    }
+    return;
+  }
+
+  if(m.address==="/imu"){
+    const [ax,ay,az] = m.args;                // floats, g
+    if(typeof ax==="number"){ $("ax").textContent=ax.toFixed(2); tiltX=ax; }
+    if(typeof ay==="number"){ $("ay").textContent=ay.toFixed(2); tiltY=ay; }
+    if(typeof az==="number") $("az").textContent=az.toFixed(2);
+    drawTilt();
+    return;
+  }
+
+  if(m.address==="/mic"){
+    // Shown only when the board actually sends this. A PyBadge without the
+    // EdgeBadge's mic never does, so the panel stays hidden rather than
+    // sitting there reading zero.
+    // rms and peak arrive at full scale, 0..32767. A linear bar is the wrong
+    // instrument for that: measured on this badge at MIC_GAIN 16, a quiet room
+    // sits near -34 dBFS -- an rms around 640 out of 32768 -- so a linear meter
+    // would pin everything short of a shout at the left end. Everything here is
+    // dBFS down to a -90 floor.
+    const [rms,peak,rate,scope] = m.args;
+    $("micpanel").style.display = "";
+
+    if(typeof rms==="number"){
+      const db = dbfs(rms);
+      $("miclevel").textContent = rms>0 ? db.toFixed(1)+" dBFS ("+rms+")" : "silent";
+      $("micb").style.width = (dbPct(db)*100).toFixed(1)+"%";
+      micHist.push(db);
+      while(micHist.length > MIC_HIST) micHist.shift();
+      drawMicHist();
+    }
+
+    if(typeof peak==="number"){
+      const now = performance.now();
+      if(peak >= micPeakHold || now - micPeakHoldAt > 1000){
+        micPeakHold = peak; micPeakHoldAt = now;
+      }
+      $("micpeak").textContent = micPeakHold>0
+        ? dbfs(micPeakHold).toFixed(1)+" dBFS ("+micPeakHold+")" : "–";
+      // The driver applies MIC_GAIN before clipping to 16 bits, so a loud
+      // enough transient pins here rather than reading true. Measured at
+      // gain 16: speech pinned it at exactly 32767. Latch this to the same
+      // hold as the readout -- judging it on the instantaneous peak let a
+      // one-frame clip come and go while the held figure still read 32767.
+      $("micclip").style.display = micPeakHold >= 32767 ? "" : "none";
+    }
+    if(typeof rate==="number") $("micrate").textContent = rate+" Hz";
+    if(scope instanceof Uint8Array && scope.length) drawScope(scope);
+    return;
+  }
+
+  /* -- echoes ----------------------------------------------------------------
+     ADDRESSES.md marks every write "echoed", and the badge does echo them, so
+     the controls below are driven from what came BACK rather than from what
+     was clicked. That is not decoration: /rate clamps to 20..5000 and /buzz
+     fills in its defaults, so the echo is the only place the values actually
+     in force appear. The one exception is the screen text, whose reply is a
+     line count rather than the strings, so that stays a local mirror. */
+
+  if(m.address==="/rate"){
+    const ms=m.args[0];
+    if(typeof ms==="number"){
+      $("rateback").textContent = ms ? ms+" ms" : "stopped";
+      $("rate").value = ms;
+      frames=0; t0=0;                      // the Hz average is about a new rate now
+      if(!ms) $("hz").textContent = "stopped";
+    }
+    return;
+  }
+
+  if(m.address==="/s/l"){                  // the board's own idea of the LED
+    const on=m.args[0]===1;
+    led=on;
+    $("led").classList.toggle("primary", on);
+    return;
+  }
+
+  if(m.address==="/buzz"){                 // hz, ms, vol as actually played
+    const [hz,ms,vol]=m.args;
+    $("buzzback").textContent = hz ? `${hz} Hz · ${ms} ms · vol ${vol}` : "stopped";
+    return;
+  }
+
+  if(m.address==="/rgb"){ const [r,g,b]=m.args;
+    for(let i=0;i<5;i++) paintPixel(i,`rgb(${r},${g},${b})`); return; }
+
+  if(m.address==="/rgb/pixels"){
+    for(let i=0;i*3+2<m.args.length && i<5;i++)
+      paintPixel(i,`rgb(${m.args[i*3]},${m.args[i*3+1]},${m.args[i*3+2]})`);
+    return;
+  }
+
+  if(m.address==="/rgb/bright"){ $("bright").value = m.args[0]; return; }
+
+  if(/^\/rgb\/\d+$/.test(m.address)){      // /rgb/<n> r g b
+    const [r,g,b]=m.args;
+    paintPixel(parseInt(m.address.slice(5),10),`rgb(${r},${g},${b})`);
+    return;
+  }
+
+  if(m.address==="/display/fill"){ const [r,g,b]=m.args;
+    scrFill(`#${[r,g,b].map(v=>v.toString(16).padStart(2,"0")).join("")}`);
+    scrText($("l1").value,$("l2").value);  // the badge redraws the text over it
+    return; }
+
+  if(m.address==="/display/rect"){ const [x,y,w,h,r,g,b]=m.args;
+    scrBox(x,y,w,h,r,g,b); return; }
+
+  if(m.address==="/display/bl"){ scrBacklight(m.args[0]); $("lite").value=m.args[0]; return; }
+
+  // /display/text answers with the number of lines drawn, not the strings, so
+  // there is nothing to mirror -- just say so once per request.
+  if(m.address==="/display/text"){ logLine("","screen redrew "+m.args[0]+" line(s)"); return; }
+
+  if(m.address==="/mic/gain"){ $("micgain").value = m.args[0];
+    $("micgainv").textContent = "×"+m.args[0]; return; }
+}
+
+setInterval(()=>{ document.querySelectorAll("td.v").forEach(n=>n.classList.add("stale")); }, 2000);
+
+/* ============================================================
+   5. Wiring
+   ============================================================ */
+function setConnected(on){
+  $("connect").disabled=on; $("disconnect").disabled=!on;
+  $("dot").classList.toggle("on",on);
+  $("state").textContent = on?"connected":"not connected";
+}
+
+if(!("serial" in navigator)){
+  logLine("warn","This browser has no Web Serial. Use Chrome or Edge over https or localhost.");
+  $("connect").disabled=true;
+}
+
+$("connect").onclick    = () => connect().catch(e=>logLine("warn",e.message));
+$("disconnect").onclick = () => disconnect();
+// --- emulated screen -------------------------------------------------------
+// The TFT cannot report its pixels back, so this is an emulation of the
+// commands rather than a readback of the panel. Where the badge echoes the
+// command -- /display/fill, /display/rect, /display/bl -- these are called
+// from onMessage() on the ECHO, so the drawing only changes once the board has
+// actually acted. /display/text is the exception: its reply is a line count,
+// so the two text lines are still mirrored at send time.
+function scrText(a,b){ $("scr1").textContent=a; $("scr2").textContent=b; }
+function scrFill(hex){
+  $("screen").setAttribute("fill",hex);
+  $("scrboxes").innerHTML="";                 // fillScreen clears the boxes too
+}
+function scrBox(x,y,w,h,r,g,b){
+  // board pixels are 160x128; the drawn screen is 360x288, so scale by 2.25
+  const K=2.25, e=document.createElementNS("http://www.w3.org/2000/svg","rect");
+  e.setAttribute("x",250+x*K); e.setAttribute("y",132+y*K);
+  e.setAttribute("width",w*K); e.setAttribute("height",h*K);
+  e.setAttribute("fill",`rgb(${r},${g},${b})`);
+  $("scrboxes").appendChild(e);
+}
+function scrBacklight(v){ $("screen").style.opacity = Math.max(.12, v/255).toFixed(2); }
+scrText("PyBadgeOscuino","waiting for OSC");
+
+$("settext").onclick    = () => { scrText($("l1").value,$("l2").value);
+                                  send("/display/text",[$("l1").value,$("l2").value]); };
+$("fill").onclick       = () => send("/display/fill",hex2rgb($("bg").value));
+$("lite").oninput       = e => send("/display/bl",[parseInt(e.target.value,10)]);
+// /buzz hz ms vol -- all three are the contract's, volume 0..255
+$("beep").onclick       = () => send("/buzz",[parseInt($("freq").value,10)||440,
+                                              parseInt($("ms").value,10)||150,140]);
+document.querySelectorAll("button[data-note]").forEach(b =>
+  b.onclick = () => send("/buzz",[parseInt(b.dataset.note,10),180,140]));
+
+$("arp").onclick = async () => {
+  for(const f of [262,330,392,523,392,330,262]){ await send("/buzz",[f,110,140]);
+    await new Promise(r=>setTimeout(r,130)); }
+};
+
+// Boxes are drawn one message at a time rather than in a burst: each is a
+// separate small write, which also keeps well clear of any inbound buffer.
+// The drawing happens in onMessage() when /display/rect comes back.
+$("paint").onclick = async () => {
+  for(let i=0;i<14;i++){
+    const x=Math.floor(Math.random()*140), y=Math.floor(Math.random()*108);
+    const r=Math.floor(Math.random()*256), g=Math.floor(Math.random()*256),
+          b=Math.floor(Math.random()*256);
+    await send("/display/rect",[x,y,20,20,r,g,b]);
+    await new Promise(r=>setTimeout(r,40));
+  }
+};
+
+function paintPixel(i,css){ const e=$("np"+i); if(e) e.setAttribute("fill",css); }
+// /rgb r g b is all five at once; /rgb/<n> r g b is one of them;
+// /rgb/bright 0..255 is the strip. The circles above are painted from the
+// echoes, not from these clicks.
+$("pxall").oninput  = e => send("/rgb",hex2rgb(e.target.value));
+$("pxoff").onclick  = () => send("/rgb",[0,0,0]);
+$("bright").oninput = e => send("/rgb/bright",[parseInt(e.target.value,10)]);
+$("rainbow").onclick = async () => {
+  const hues=[0,60,120,200,280];
+  for(let i=0;i<5;i++){
+    await send("/rgb/"+i,hsv2rgb(hues[i],1,1));
+    await new Promise(r=>setTimeout(r,40));
+  }
+};
+function hsv2rgb(h,s,v){
+  const f=(n,k=(n+h/60)%6)=>Math.round(255*(v-v*s*Math.max(Math.min(k,4-k,1),0)));
+  return [f(5),f(3),f(1)];
+}
+// click any pixel to colour just that one
+for(let i=0;i<5;i++){
+  const e=$("np"+i);
+  if(!e) continue;
+  e.style.cursor="pointer";
+  e.onclick = () => send("/rgb/"+i,hex2rgb($("pxall").value));
+}
+
+let led=false;
+$("led").onclick = () => send("/s/l",[led?0:1]);   // the echo flips `led`
+
+// One /rate for the board: it paces the /state bundle and /mic alike, and 0
+// stops both. The badge echoes the value it clamped to, which is what the
+// "period echoed" row shows.
+$("setrate").onclick = () => send("/rate",[parseInt($("rate").value,10)||0]);
+$("stop").onclick    = () => send("/rate",[0]);
+
+// Single-shot reads. Each answers on its own address with the same shape it
+// has in the stream, so the rows above fill in even with the stream stopped.
+// /imu and /mic answer only on a badge that announced them -- silence there
+// is the contract's way of saying the part is not fitted.
+$("readonce").onclick = async () => {
+  for(const a of ["/btn","/light","/bat","/imu","/mic"]) await send(a,[]);
+};
+$("setgain").onclick = () => send("/mic/gain",[parseInt($("micgain").value,10)||8]);
+
+// The OS-level unplug event: without it the page read "connected" forever
+// after the board vanished, and only a manual click reset the UI.
+if ("serial" in navigator) {
+  navigator.serial.addEventListener("disconnect", e => {
+    if (port && e.target === port) $("disconnect").onclick();
+  });
+}
+</script>
+</body>
+</html>
